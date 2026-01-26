@@ -32,11 +32,12 @@ from gpt_recommender import (
 )
 from spotify_automation.feedback_store import load_state
 from spotify_automation.taste_profile import load_taste_profile
+from spotify_automation import paths
 
 BASE_DIR = Path(__file__).resolve().parent
-CONFIG_DIR = BASE_DIR / "config"
-DATA_DIR = BASE_DIR / "data"
-DB_PATH = BASE_DIR.parent / "track_history.db"
+CONFIG_DIR = paths.config_dir()
+DATA_DIR = paths.data_dir()
+DB_PATH = paths.db_path()
 DEFAULT_LOG = DATA_DIR / "gpt_history.jsonl"
 SCOPE = "playlist-read-private"
 DEFAULT_BANNED = {
@@ -277,7 +278,9 @@ def _filter_banned(
 
 def main() -> None:
     _load_env_file(BASE_DIR.parent / ".env")
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
     args = parse_args()
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     settings = _load_json(
         CONFIG_DIR / "settings.json",
         {"playlist_name": "My Daily DJ", "timezone_hint": "local time"},
@@ -292,7 +295,9 @@ def main() -> None:
     )
     track_pool = _fetch_tracks(args.energy_tag, args.limit, banned_ids)
     base_selection = track_pool[: args.limit]
-    sp_client = spotipy.Spotify(auth_manager=SpotifyOAuth(scope=SCOPE))
+    cache_path = paths.cache_dir()
+    cache_path.mkdir(parents=True, exist_ok=True)
+    sp_client = spotipy.Spotify(auth_manager=SpotifyOAuth(scope=SCOPE, cache_path=str(cache_path / ".cache")))
     taste_profile = load_taste_profile(args.taste_profile)
     feedback_state = load_state(
         args.feedback_store, artist_like_threshold=_get_like_threshold(taste_profile)

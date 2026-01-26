@@ -7,28 +7,28 @@ It will:
 """
 from __future__ import annotations
 
-import shutil
 import sqlite3
 from pathlib import Path
 
-BASE_DIR = Path(__file__).resolve().parent
-ROOT_DB = BASE_DIR.parent / "track_history.db"
-LEGACY_DB = BASE_DIR / "track_history.db"
+from spotify_automation import paths
 
 
 def ensure_db_location() -> Path:
     """
-    Move legacy DB into the repo root if needed.
+    Prefer DAILYDJ_HOME if set or present; otherwise fall back to legacy path.
     """
-    if ROOT_DB.exists():
-        return ROOT_DB
-    if LEGACY_DB.exists():
-        ROOT_DB.write_bytes(LEGACY_DB.read_bytes())
-        print(f"Copied legacy DB from {LEGACY_DB} -> {ROOT_DB}")
-        return ROOT_DB
-    ROOT_DB.touch()
-    print(f"Created new DB at {ROOT_DB}")
-    return ROOT_DB
+    db_path = paths.db_path()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    if db_path.exists():
+        return db_path
+    legacy = Path(__file__).resolve().parent / "track_history.db"
+    if not db_path.exists() and legacy.exists() and db_path != legacy:
+        db_path.write_bytes(legacy.read_bytes())
+        print(f"Copied legacy DB from {legacy} -> {db_path}")
+        return db_path
+    db_path.touch()
+    print(f"Created new DB at {db_path}")
+    return db_path
 
 
 def column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:

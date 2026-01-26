@@ -6,7 +6,9 @@ import subprocess
 import json
 from pathlib import Path
 
-DB_PATH = Path(__file__).resolve().parent.parent / "track_history.db"
+from spotify_automation import paths
+
+DB_PATH = paths.db_path()
 PLAYLIST_ID = "1rDydhUJnGuHZ2x472nQuW"
 
 app = FastAPI(title="Local Spotify Automation API")

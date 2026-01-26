@@ -124,6 +124,11 @@ for quick tagging.
 ## Full system documentation
 See `docs/DailyDJ.md` for a complete overview, component map, data layout, flow, usage, and troubleshooting.
 
+## Runtime home
+- Set `DAILYDJ_HOME` to choose where runtime state lives (default: `~/.dailydj`).
+- Stored there: `track_history.db`, `config/`, `data/gpt_history.jsonl`, `state/feedback.jsonl`, and Spotify token cache. If `DAILYDJ_HOME` is unset and the home does not exist, legacy repo-relative paths are used.
+- To migrate manually: create the home directory, move your DB/config/data/state files (and `.cache` token if desired) into it, then set `DAILYDJ_HOME`.
+
 ## Tests
 
 Unit tests for the GPT helper live under `tests/`. Run them with:

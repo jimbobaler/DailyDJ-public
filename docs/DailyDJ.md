@@ -19,10 +19,15 @@
 - State/logs: `track_history.db` (root), `data/gpt_history.jsonl`, `state/feedback.jsonl`.
 
 ## Data and state layout
-- **DB (`track_history.db`)**: `tracks` (id, artist, title, energy_tag, duration_ms, last_played, source); `bans` (track-level); `artist_bans`; `playlist_runs` and `playlist_run_tracks` for audit.
-- **Feedback (fatigue source)**: `state/feedback.jsonl` (type `generated` events with picks and timestamp) – used to build last-seen maps for scoring and cooldowns.
-- **GPT history**: `data/gpt_history.jsonl` (append-only run log of GPT-assisted selections).
-- **Config**: `config/taste_profile.yaml` drives bans, boosts/likes, constraints, discovery defaults and per-mode overrides.
+- **Home directory**: Configurable via `DAILYDJ_HOME` (defaults to `~/.dailydj`). If unset and home does not exist, legacy repo-relative paths under `spotify_automation/` are used.
+- **DB (`track_history.db`)**: `tracks` (id, artist, title, energy_tag, duration_ms, last_played, source); `bans` (track-level); `artist_bans`; `playlist_runs` and `playlist_run_tracks` for audit. Stored under home or legacy path.
+- **Feedback (fatigue/learning)**: `state/feedback.jsonl` (events: `generated`, `like_track`, `boost_artist_auto`) – used to build last-seen maps, fatigue, and learned boosts. Stored under home/state or legacy.
+- **GPT history**: `data/gpt_history.jsonl` (append-only run log of GPT-assisted selections). Stored under home/data or legacy.
+- **Config**: `config/taste_profile.yaml`, `settings.json`, etc. Loaded from home/config if home exists or `DAILYDJ_HOME` is set, else legacy repo config.
+- **Spotify token cache**: stored under home/.cache if home exists or `DAILYDJ_HOME` is set; otherwise legacy `.cache`.
+
+### Migration
+- To keep the repo stateless: create `DAILYDJ_HOME` (default `~/.dailydj`), move `track_history.db`, `config/`, `data/gpt_history.jsonl`, `state/feedback.jsonl`, and `.cache` into it, then set `DAILYDJ_HOME` in your environment. If `DAILYDJ_HOME` is unset and the home does not exist, the code will continue using legacy repo-relative paths.
 
 ### Positive feedback (Spotify likes)
 - When a user saves/likes a track in Spotify that appeared in a recent DailyDJ run, a `like_track` event is written to `state/feedback.jsonl` (track_uri, artist, timestamp).
@@ -68,6 +73,10 @@
 - Auth issues: ensure `.env` has Spotify creds and OpenAI key; scopes used: `playlist-modify-private`, `playlist-read-private`.
 
 ## Usage (commands)
+- Home directory:
+  - Default: `~/.dailydj`. Override with `DAILYDJ_HOME=/path/to/home`.
+  - To migrate manually: create the home, move `track_history.db`, `config/`, `data/gpt_history.jsonl`, `state/feedback.jsonl`, and `.cache` into it, then set `DAILYDJ_HOME`.
+
 - Ensure venv and deps installed; `.env` with Spotify and OpenAI keys.
 - Migrate DB (once or after schema changes):
   ```

@@ -25,12 +25,13 @@ from gpt_recommender import (
 )
 from spotify_automation.taste_profile import load_taste_profile
 from spotify_automation.feedback_store import load_state, record_boost_artist_event, record_like_event
+from spotify_automation import paths
 
 BASE_DIR = Path(__file__).resolve().parent
-CONFIG_DIR = BASE_DIR / "config"
-DATA_DIR = BASE_DIR / "data"
-STATE_DIR = BASE_DIR / "state"
-DB_PATH = BASE_DIR.parent / "track_history.db"
+CONFIG_DIR = paths.config_dir()
+DATA_DIR = paths.data_dir()
+STATE_DIR = paths.state_dir()
+DB_PATH = paths.db_path()
 GPT_HISTORY_PATH = DATA_DIR / "gpt_history.jsonl"
 DEFAULT_TASTE_PROFILE = CONFIG_DIR / "taste_profile.yaml"
 DEFAULT_FEEDBACK_STORE = STATE_DIR / "feedback.jsonl"
@@ -89,7 +90,8 @@ DEFAULT_REDUCED = [
 _load_env_file(BASE_DIR.parent / ".env")
 
 SCOPE = "playlist-modify-private playlist-read-private user-library-read"
-sp = spotipy.Spotify(auth_manager=SpotifyOAuth(scope=SCOPE))
+paths.cache_dir().mkdir(parents=True, exist_ok=True)
+sp = spotipy.Spotify(auth_manager=SpotifyOAuth(scope=SCOPE, cache_path=str(paths.cache_dir() / ".cache")))
 
 settings = DEFAULT_SETTINGS | _load_json(CONFIG_DIR / "settings.json", {})
 user_profile = _load_json(CONFIG_DIR / "user_profile.json", {})
@@ -541,6 +543,10 @@ def _select_for_duration(
 
 def main() -> None:
     global DYNAMIC_BANNED_ARTISTS, FEEDBACK_STATE
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    paths.cache_dir().mkdir(parents=True, exist_ok=True)
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     DYNAMIC_BANNED_ARTISTS = get_banned_artists_db()
     today_index = date.today().weekday()
     energy_tag = ENERGY_LABELS[today_index]

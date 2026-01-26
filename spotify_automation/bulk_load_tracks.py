@@ -30,9 +30,12 @@ from typing import Dict, Iterable, List, Optional
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
 
-DB_PATH = Path(__file__).resolve().parent.parent / "track_history.db"
-DEFAULT_DATA = Path(__file__).resolve().parent / "data" / "gpt_bulk_tracks.json"
+from spotify_automation import paths
+
+DB_PATH = paths.db_path()
+DEFAULT_DATA = paths.data_dir() / "gpt_bulk_tracks.json"
 SCOPE = "playlist-modify-private playlist-read-private"
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 
 def _load_env_file(path: Path) -> None:
@@ -78,7 +81,11 @@ def parse_args() -> argparse.Namespace:
 
 def read_entries(path: Path) -> List[Dict[str, Optional[str]]]:
     if not path.exists():
-        raise FileNotFoundError(f"Input file not found: {path}")
+        legacy = Path(__file__).resolve().parent / "data" / "gpt_bulk_tracks.json"
+        if legacy.exists():
+            path = legacy
+        else:
+            raise FileNotFoundError(f"Input file not found: {path}")
     data = json.loads(path.read_text())
     entries: List[Dict[str, Optional[str]]] = []
     for entry in data:
@@ -162,7 +169,10 @@ def insert_tracks(
 def main() -> None:
     args = parse_args()
     _load_env_file(Path(__file__).resolve().parent.parent / ".env")
-    sp = spotipy.Spotify(auth_manager=SpotifyOAuth(scope=SCOPE))
+    paths.cache_dir().mkdir(parents=True, exist_ok=True)
+    sp = spotipy.Spotify(
+        auth_manager=SpotifyOAuth(scope=SCOPE, cache_path=str(paths.cache_dir() / ".cache"))
+    )
 
     entries = read_entries(args.input)
     track_ids = []

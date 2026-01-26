@@ -1,7 +1,10 @@
 import sqlite3
 from pathlib import Path
 
-DB_PATH = Path(__file__).resolve().parent.parent / "track_history.db"
+from spotify_automation import paths
+
+DB_PATH = paths.db_path()
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 schema = """
 CREATE TABLE IF NOT EXISTS tracks (

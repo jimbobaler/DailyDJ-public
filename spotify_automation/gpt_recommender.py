@@ -31,6 +31,13 @@ try:
 except ImportError:  # pragma: no cover - the project may not have openai yet
     OpenAI = None
 
+from spotify_automation.taste_profile import (
+    apply_constraints,
+    is_hard_banned,
+    normalize_text,
+    score_track,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -42,6 +49,7 @@ class TrackCandidate:
     track_id: str
     title: str
     artist: str
+    uri: Optional[str] = None
     duration_ms: Optional[int] = None
     album: Optional[str] = None
     energy_tag: Optional[str] = None
@@ -481,39 +489,132 @@ def run_gpt_recommender(
     max_history_items: int = 10,
     max_pool_snapshot: int = 12,
     search_func: Optional[Callable[[GPTRecommendation], Optional[TrackCandidate]]] = None,
+    taste_profile: Optional[Dict] = None,
+    feedback_state: Optional[Dict] = None,
+    feedback_path: Optional[Path] = None,
+    energy_tag: Optional[str] = None,
+    candidate_limit: int = 300,
 ) -> RecommendationRunResult:
     """
     High-level helper that handles prompt/response/merge flow.
     """
-    if discovery_ratio <= 0:
-        return RecommendationRunResult(list(base_tracks), [], [])
+    profile = taste_profile or {}
+    state = feedback_state or {"artist_last_seen": {}, "track_last_seen": {}}
+    now = datetime.utcnow()
 
-    builder = GPTRequestBuilder(
-        context,
-        playlist_name=playlist_name,
-        timezone_hint=timezone_hint,
-        max_history_items=max_history_items,
-        max_pool_snapshot=max_pool_snapshot,
-    )
+    # prepare pool
+    pool_with_uri: List[TrackCandidate] = []
+    for track in context.track_pool:
+        uri = track.metadata.get("uri") if track.metadata else None
+        if not uri:
+            uri = f"spotify:track:{track.track_id}"
+        if is_hard_banned(track.artist, track.title, profile):
+            continue
+        pool_with_uri.append(replace(track, uri=uri))
+
+    # deterministic scoring
+    scored = []
+    for track in pool_with_uri:
+        score = score_track(track, profile, state, now)
+        scored.append((score, track))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    shortlist = [track for _, track in scored[:candidate_limit]]
+
+    # constraints filter for shortlist order
+    constrained_pool = apply_constraints(shortlist, profile, state, now)
+
+    discovery_target = max(0, round(total_limit * discovery_ratio))
     parser = GPTResponseParser()
     client = completion_client or OpenAIChatCompletionClient()
+    warnings: List[str] = []
+    gpt_picks: List[TrackCandidate] = []
 
-    prompt = builder.build(
-        discovery_target=max(1, round(total_limit * discovery_ratio)),
-        total_tracks=total_limit,
-    )
-    raw_response = client.complete(prompt)
-    recommendations = parser.parse(raw_response)
-    final_tracks, warnings = merge_gpt_recommendations(
-        base_tracks=base_tracks,
-        track_pool=context.track_pool,
-        gpt_recommendations=recommendations,
-        total_limit=total_limit,
-        discovery_ratio=discovery_ratio,
-        rule_preferences=context.rule_preferences,
-        search_func=search_func,
-    )
-    return RecommendationRunResult(final_tracks, warnings, recommendations)
+    if discovery_target > 0 and constrained_pool:
+        candidate_lines = "\n".join(
+            f"- {t.uri} | {t.artist} – {t.title}" for t in constrained_pool
+        )
+        constraints = profile.get("constraints", {})
+        prompt = (
+            f"You are selecting discovery tracks for playlist '{playlist_name}'.\n"
+            f"Timezone: {timezone_hint}. Energy tag: {energy_tag or ''}.\n"
+            f"Hard bans: {profile.get('hard_bans', {})}.\n"
+            f"Avoid: {profile.get('avoid', {})}. Boost: {profile.get('boost', {})}.\n"
+            f"Constraints: max_tracks_per_artist={constraints.get('max_tracks_per_artist', 'n/a')}, "
+            f"cooldown_days_same_track={constraints.get('cooldown_days_same_track', 'n/a')}, "
+            f"cooldown_days_same_artist={constraints.get('cooldown_days_same_artist', 'n/a')}.\n"
+            f"Vibe tags: {', '.join(profile.get('vibe_tags', []))}.\n"
+            f"You MUST select only from the candidate URIs below. Output strict JSON: "
+            f'{{\"picks\":[\"spotify:track:...\"], \"notes\":\"optional\"}} with at most {discovery_target} picks.\n'
+            f"If you cannot satisfy, return fewer picks.\n\n"
+            f"Candidates:\n{candidate_lines}\n"
+        )
+        try:
+            raw_response = client.complete(prompt)
+            json_text = parser._extract_json(raw_response)
+            payload = json.loads(json_text)
+            picks = payload.get("picks", [])
+            if not isinstance(picks, list):
+                raise ValueError("picks must be a list")
+            allowed = {t.uri: t for t in constrained_pool}
+            for uri in picks:
+                if not isinstance(uri, str):
+                    warnings.append("Non-string URI skipped from GPT picks.")
+                    continue
+                if uri not in allowed:
+                    warnings.append(f"GPT pick not in candidate list: {uri}")
+                    continue
+                gpt_picks.append(allowed[uri])
+        except Exception as exc:  # pragma: no cover - network/SDK errors
+            warnings.append(f"GPT recommender skipped: {exc}")
+            gpt_picks = []
+
+    # apply constraints to gpt picks
+    gpt_picks = apply_constraints(gpt_picks, profile, state, now)[:discovery_target]
+
+    # fill with base tracks
+    final_tracks: List[TrackCandidate] = []
+    seen = set()
+    for track in gpt_picks:
+        if track.track_id in seen:
+            continue
+        seen.add(track.track_id)
+        final_tracks.append(track)
+    for track in base_tracks:
+        if len(final_tracks) >= total_limit:
+            break
+        if track.track_id in seen:
+            continue
+        if is_hard_banned(track.artist, track.title, profile):
+            continue
+        seen.add(track.track_id)
+        final_tracks.append(track)
+
+    # deterministic fallback if we still need more
+    if len(final_tracks) < total_limit:
+        for _, track in scored:
+            if len(final_tracks) >= total_limit:
+                break
+            if track.track_id in seen:
+                continue
+            final_tracks.append(track)
+            seen.add(track.track_id)
+
+    # record feedback event
+    if feedback_path:
+        try:
+            from feedback_store import record_generated_event
+
+            record_generated_event(
+                feedback_path,
+                picks=[t.uri or f"spotify:track:{t.track_id}" for t in final_tracks],
+                energy_tag=energy_tag or "",
+                discovery_ratio=discovery_ratio,
+                candidate_count=len(constrained_pool),
+            )
+        except Exception:
+            logger.warning("Failed to write feedback event", exc_info=True)
+
+    return RecommendationRunResult(final_tracks, warnings, [])
 
 
 __all__ = [

@@ -58,9 +58,11 @@ The refresh script reads user information from JSON files under
 `spotify_automation/config/`:
 
 - `settings.json` – playlist id/name, discovery ratio, playlist limits, GPT flags,
-  `target_duration_minutes` (e.g., 360 for ~6 hours), and `no_repeat_days` (e.g., 14).
+  `target_duration_minutes`, and `no_repeat_days`.
 - `user_profile.json` – short profile lines passed to GPT.
 - `rules.json` – banned / reduced artists plus any future rule lists.
+- `taste_profile.yaml` – hard_bans/avoid/boost/like lists, constraints (per-artist cap, cooldowns,
+  optional dedupe), vibe tags, and per-mode overrides (e.g., friday discovery ratio).
 
 Tweak those files before running `python3 spotify_automation/daily_dj_refresh.py`.
 If you store secrets such as `OPENAI_API_KEY` in a repo-level `.env`, the script
@@ -105,6 +107,22 @@ python3 spotify_automation/bulk_load_tracks.py
 The loader fetches metadata from Spotify, writes the songs into
 `track_history.db`, and supports options like `--dry-run` or `--default-energy-tag`
 for quick tagging.
+
+## Taste profile and feedback
+
+- Edit `spotify_automation/config/taste_profile.yaml` to set `hard_bans`, `avoid`, `boost`,
+  constraints (`max_tracks_per_artist`, `cooldown_days_same_track`, `cooldown_days_same_artist`,
+  optional dedupe), vibe tags, and per-mode overrides like `modes.friday.discovery_ratio`.
+- Hard bans are enforced in code; GPT cannot select them. GPT is also forced to pick only from
+  the provided Spotify candidate pool and must return strict JSON with track URIs.
+- Feedback events are written to `spotify_automation/state/feedback.jsonl` (type `generated`),
+  and influence scoring via fatigue on recently seen artists/tracks. Playlist runs are logged in
+  `track_history.db` tables `playlist_runs` and `playlist_run_tracks`.
+- Optional CLI flags on `run_gpt_recommender.py`: `--taste-profile` and `--feedback-store`
+  to point at alternate configs/stores.
+
+## Full system documentation
+See `docs/DailyDJ.md` for a complete overview, component map, data layout, flow, usage, and troubleshooting.
 
 ## Tests
 

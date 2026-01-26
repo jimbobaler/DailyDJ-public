@@ -194,9 +194,8 @@ class GPTRecommenderTests(unittest.TestCase):
             completion_client=client,
         )
         self.assertEqual(len(result.tracks), 2)
-        self.assertTrue(result.gpt_recommendations)
         self.assertFalse(result.warnings)
-        self.assertIn("playlist called \"My Daily DJ\"", client.prompt)
+        self.assertIn("playlist 'My Daily DJ'", client.prompt)
 
 
 if __name__ == "__main__":

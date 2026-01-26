@@ -10,12 +10,17 @@ import argparse
 import json
 import os
 import sqlite3
+import sys
 from datetime import date
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional
 
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
+
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from gpt_recommender import (
     GPTRecommendation,
@@ -25,6 +30,8 @@ from gpt_recommender import (
     log_recommendations,
     run_gpt_recommender,
 )
+from spotify_automation.feedback_store import load_state
+from spotify_automation.taste_profile import load_taste_profile
 
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_DIR = BASE_DIR / "config"
@@ -83,6 +90,18 @@ def parse_args() -> argparse.Namespace:
         "--save",
         action="store_true",
         help="Persist resolved tracks into the database for future runs.",
+    )
+    parser.add_argument(
+        "--taste-profile",
+        type=Path,
+        default=BASE_DIR / "config" / "taste_profile.yaml",
+        help="Path to taste profile configuration.",
+    )
+    parser.add_argument(
+        "--feedback-store",
+        type=Path,
+        default=BASE_DIR / "state" / "feedback.jsonl",
+        help="Where to store feedback events (JSONL).",
     )
     return parser.parse_args()
 
@@ -163,12 +182,22 @@ def _get_banned_ids() -> set[str]:
     return {r[0] for r in rows}
 
 
+def _get_banned_artists() -> set[str]:
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute("SELECT artist FROM artist_bans").fetchall()
+    return {r[0].lower() for r in rows}
+
+
 def _build_rule_preferences(rules: Dict[str, Iterable[str]]) -> RulePreferences:
     return RulePreferences(
         banned_artists=sorted(rules.get("banned_artists", [])),
         reduce_frequency_artists=sorted(rules.get("reduce_frequency_artists", [])),
         increase_weight_artists=sorted(rules.get("increase_weight_artists", [])),
     )
+
+
+def _get_like_threshold(profile: Dict) -> int:
+    return int(profile.get("learning", {}).get("artist_like_threshold", 5))
 
 
 def _search_spotify_for_rec(sp_client: spotipy.Spotify) -> Callable[[GPTRecommendation], Optional[TrackCandidate]]:
@@ -256,10 +285,18 @@ def main() -> None:
     user_profile = _load_json(CONFIG_DIR / "user_profile.json", {})
     rules = _load_json(CONFIG_DIR / "rules.json", {})
     banned_ids = _get_banned_ids()
-    banned_artists = {artist.lower() for artist in rules.get("banned_artists", [])} | DEFAULT_BANNED
+    banned_artists = (
+        {artist.lower() for artist in rules.get("banned_artists", [])}
+        | DEFAULT_BANNED
+        | _get_banned_artists()
+    )
     track_pool = _fetch_tracks(args.energy_tag, args.limit, banned_ids)
     base_selection = track_pool[: args.limit]
     sp_client = spotipy.Spotify(auth_manager=SpotifyOAuth(scope=SCOPE))
+    taste_profile = load_taste_profile(args.taste_profile)
+    feedback_state = load_state(
+        args.feedback_store, artist_like_threshold=_get_like_threshold(taste_profile)
+    )
 
     context = RecommendationContext(
         user_profile=user_profile,
@@ -279,6 +316,10 @@ def main() -> None:
         max_history_items=args.history_limit,
         max_pool_snapshot=args.limit,
         search_func=_search_spotify_for_rec(sp_client),
+        taste_profile=taste_profile,
+        feedback_state=feedback_state,
+        feedback_path=args.feedback_store,
+        energy_tag=args.energy_tag,
     )
 
     filtered_tracks = _filter_banned(result.tracks, banned_ids, banned_artists)

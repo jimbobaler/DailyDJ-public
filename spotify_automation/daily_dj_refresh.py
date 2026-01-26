@@ -10,6 +10,11 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
 
+import sys
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from gpt_recommender import (
     GPTRecommendation,
     RecommendationContext,
@@ -18,12 +23,17 @@ from gpt_recommender import (
     log_recommendations,
     run_gpt_recommender,
 )
+from spotify_automation.taste_profile import load_taste_profile
+from spotify_automation.feedback_store import load_state, record_boost_artist_event, record_like_event
 
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_DIR = BASE_DIR / "config"
 DATA_DIR = BASE_DIR / "data"
+STATE_DIR = BASE_DIR / "state"
 DB_PATH = BASE_DIR.parent / "track_history.db"
 GPT_HISTORY_PATH = DATA_DIR / "gpt_history.jsonl"
+DEFAULT_TASTE_PROFILE = CONFIG_DIR / "taste_profile.yaml"
+DEFAULT_FEEDBACK_STORE = STATE_DIR / "feedback.jsonl"
 
 
 def _load_env_file(path: Path) -> None:
@@ -78,7 +88,7 @@ DEFAULT_REDUCED = [
 
 _load_env_file(BASE_DIR.parent / ".env")
 
-SCOPE = "playlist-modify-private playlist-read-private"
+SCOPE = "playlist-modify-private playlist-read-private user-library-read"
 sp = spotipy.Spotify(auth_manager=SpotifyOAuth(scope=SCOPE))
 
 settings = DEFAULT_SETTINGS | _load_json(CONFIG_DIR / "settings.json", {})
@@ -95,6 +105,16 @@ ENABLE_GPT = bool(settings.get("enable_gpt", False))
 MAX_HISTORY_ITEMS = int(settings.get("max_history_items", 10))
 MAX_POOL_SNAPSHOT = int(settings.get("max_pool_snapshot", 12))
 TIMEZONE_HINT = settings.get("timezone_hint", "local time")
+TASTE_PROFILE = load_taste_profile(DEFAULT_TASTE_PROFILE)
+MODES = TASTE_PROFILE.get("modes", {})
+DYNAMIC_BANNED_ARTISTS: set[str] = set()
+
+
+def _get_like_threshold(profile: Dict) -> int:
+    return int(profile.get("learning", {}).get("artist_like_threshold", 5))
+
+
+FEEDBACK_STATE = load_state(DEFAULT_FEEDBACK_STORE, artist_like_threshold=_get_like_threshold(TASTE_PROFILE))
 
 
 def _load_rule_set(key: str, defaults: Iterable[str]) -> List[str]:
@@ -106,6 +126,7 @@ def _load_rule_set(key: str, defaults: Iterable[str]) -> List[str]:
 BANNED_ARTISTS = set(_load_rule_set("banned_artists", DEFAULT_BANNED))
 REDUCE_FREQUENCY = set(_load_rule_set("reduce_frequency_artists", DEFAULT_REDUCED))
 INCREASE_WEIGHT = set(_load_rule_set("increase_weight_artists", []))
+DYNAMIC_BANNED_ARTISTS: set[str] = set()
 
 RULE_PREFERENCES = RulePreferences(
     banned_artists=sorted(BANNED_ARTISTS),
@@ -159,6 +180,17 @@ def get_candidate_tracks(tag: str) -> List[TrackCandidate]:
     return [_row_to_candidate(row) for row in rows]
 
 
+def get_all_tracks() -> List[TrackCandidate]:
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            """
+            SELECT track_id, artist, title, energy_tag, last_played, duration_ms
+            FROM tracks
+            """
+        ).fetchall()
+    return [_row_to_candidate(row) for row in rows]
+
+
 def get_recent_history(limit: int) -> List[TrackCandidate]:
     with sqlite3.connect(DB_PATH) as conn:
         rows = conn.execute(
@@ -180,6 +212,12 @@ def get_banned_track_ids() -> set[str]:
     return {r[0] for r in rows}
 
 
+def get_banned_artists_db() -> set[str]:
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute("SELECT artist FROM artist_bans").fetchall()
+    return {r[0].lower() for r in rows}
+
+
 def record_bans(track_ids: Iterable[str], *, reason: str) -> None:
     today = str(date.today())
     with sqlite3.connect(DB_PATH) as conn:
@@ -195,6 +233,22 @@ def record_bans(track_ids: Iterable[str], *, reason: str) -> None:
                 """,
                 (tid, artist, title, reason, today),
             )
+            # If same artist has 3+ bans due to removals, ban the artist.
+            if artist:
+                count_row = conn.execute(
+                    """
+                    SELECT COUNT(*) FROM bans WHERE artist=? AND reason=?
+                    """,
+                    (artist, "manually removed from playlist"),
+                ).fetchone()
+                if count_row and count_row[0] >= 3:
+                    conn.execute(
+                        """
+                        INSERT OR REPLACE INTO artist_bans (artist, reason, banned_at)
+                        VALUES (?, ?, ?)
+                        """,
+                        (artist.lower(), "auto-banned due to repeated removals", today),
+                    )
         conn.commit()
 
 
@@ -294,11 +348,84 @@ def mark_tracks_played(track_ids: Iterable[str]) -> None:
         conn.commit()
 
 
+def _replace_playlist_items(track_ids: List[str]) -> None:
+    if not track_ids:
+        return
+    # Spotify limits to 100 URIs per call.
+    first_batch = track_ids[:100]
+    sp.playlist_replace_items(PLAYLIST_ID, first_batch)
+    remaining = track_ids[100:]
+    for i in range(0, len(remaining), 100):
+        chunk = remaining[i : i + 100]
+        sp.playlist_add_items(PLAYLIST_ID, chunk)
+
+
+def _recent_playlist_track_ids(days: int = 30) -> Dict[str, str]:
+    cutoff = str(date.today() - timedelta(days=days))
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            """
+            SELECT prt.track_id, t.artist
+            FROM playlist_run_tracks prt
+            JOIN playlist_runs pr ON prt.run_id = pr.id
+            LEFT JOIN tracks t ON prt.track_id = t.track_id
+            WHERE pr.run_at >= ?
+            """,
+            (cutoff,),
+        ).fetchall()
+    return {row[0]: row[1] or "" for row in rows}
+
+
+def detect_liked_tracks(
+    *,
+    sp_client: spotipy.Spotify,
+    feedback_path: Path,
+    feedback_state: Dict,
+    artist_like_threshold: int,
+) -> Dict:
+    """
+    Fetch recent saved tracks from Spotify and emit like events for tracks that
+    appeared in recent runs and are not already recorded. Auto-boost artists
+    when they hit the threshold.
+    """
+    # Pull last 50 saved tracks (reverse chronological)
+    saved = sp_client.current_user_saved_tracks(limit=50).get("items", [])
+    recent_run_map = _recent_playlist_track_ids()
+    already_liked = feedback_state.get("liked_by_uri", set())
+    learned_boost = set(feedback_state.get("learned_boost_artists", set()))
+    liked_counts = dict(feedback_state.get("liked_by_artist", {}))
+
+    for item in saved:
+        track = item.get("track") or {}
+        uri = track.get("uri")
+        tid = track.get("id")
+        if not uri or not tid:
+            continue
+        if uri.lower() in already_liked:
+            continue
+        if tid not in recent_run_map:
+            continue
+        artist_names = ", ".join(a["name"] for a in track.get("artists", []))
+        record_like_event(feedback_path, track_uri=uri, artist=artist_names)
+        liked_counts[artist_names.lower()] = liked_counts.get(artist_names.lower(), 0) + 1
+        if (
+            liked_counts[artist_names.lower()] >= artist_like_threshold
+            and artist_names.lower() not in learned_boost
+        ):
+            record_boost_artist_event(
+                feedback_path, artist=artist_names, count=liked_counts[artist_names.lower()]
+            )
+            learned_boost.add(artist_names.lower())
+
+    # Reload updated state after writes
+    return load_state(feedback_path, artist_like_threshold=artist_like_threshold)
+
+
 def _apply_artist_rules(track: TrackCandidate, recent_ids: set[str]) -> bool:
     if not track.track_id or track.track_id in recent_ids:
         return False
     artist_low = track.artist.lower()
-    if any(b in artist_low for b in BANNED_ARTISTS):
+    if any(b in artist_low for b in BANNED_ARTISTS) or artist_low in DYNAMIC_BANNED_ARTISTS:
         return False
     if any(r in artist_low for r in REDUCE_FREQUENCY) and random.random() < 0.66:
         return False
@@ -336,8 +463,10 @@ def _maybe_run_gpt(
     *,
     run_label: str,
     total_limit: int,
+    discovery_ratio: float,
+    energy_tag: str,
 ):
-    if not ENABLE_GPT or DISCOVERY_RATIO <= 0:
+    if not ENABLE_GPT or discovery_ratio <= 0:
         return list(base_tracks), []
 
     base_rules = {
@@ -364,10 +493,14 @@ def _maybe_run_gpt(
             playlist_name=PLAYLIST_NAME,
             timezone_hint=TIMEZONE_HINT,
             total_limit=total_limit,
-            discovery_ratio=DISCOVERY_RATIO,
+            discovery_ratio=discovery_ratio,
             max_history_items=MAX_HISTORY_ITEMS,
             max_pool_snapshot=MAX_POOL_SNAPSHOT,
             search_func=_search_spotify_for_rec,
+            taste_profile=TASTE_PROFILE,
+            feedback_state=FEEDBACK_STATE,
+            feedback_path=DEFAULT_FEEDBACK_STORE,
+            energy_tag=energy_tag,
         )
         if result.gpt_recommendations:
             log_recommendations(result.tracks, GPT_HISTORY_PATH, run_label=run_label)
@@ -407,10 +540,25 @@ def _select_for_duration(
 
 
 def main() -> None:
+    global DYNAMIC_BANNED_ARTISTS, FEEDBACK_STATE
+    DYNAMIC_BANNED_ARTISTS = get_banned_artists_db()
     today_index = date.today().weekday()
     energy_tag = ENERGY_LABELS[today_index]
     run_label = f"{date.today().isoformat()}-{energy_tag}"
     print(f"\n🎧 Building playlist for {energy_tag.capitalize()}...")
+
+    mode_override = MODES.get(energy_tag, {})
+    discovery_ratio = float(mode_override.get("discovery_ratio", DISCOVERY_RATIO))
+
+    like_threshold = _get_like_threshold(TASTE_PROFILE)
+    # Refresh feedback state (may contain learned boosts)
+    FEEDBACK_STATE = load_state(DEFAULT_FEEDBACK_STORE, artist_like_threshold=like_threshold)
+    FEEDBACK_STATE = detect_liked_tracks(
+        sp_client=sp,
+        feedback_path=DEFAULT_FEEDBACK_STORE,
+        feedback_state=FEEDBACK_STATE,
+        artist_like_threshold=like_threshold,
+    )
 
     current_playlist = set(fetch_playlist_track_ids())
     last_run_ids = load_last_run_track_ids()
@@ -429,6 +577,16 @@ def main() -> None:
         if t.track_id not in banned_ids and t.track_id not in recent and _apply_artist_rules(t, recent)
     ]
 
+    # Fallback: if no eligible tracks for the day's tag, broaden to all tracks ignoring tag
+    if not eligible:
+        print("⚠️  No eligible tracks for today's tag; falling back to full catalog.")
+        candidates = get_all_tracks()
+        eligible = [
+            t
+            for t in candidates
+            if t.track_id not in banned_ids and t.track_id not in recent and _apply_artist_rules(t, recent)
+        ]
+
     if not eligible:
         raise RuntimeError("No eligible tracks found — check DB or filters.")
 
@@ -443,6 +601,8 @@ def main() -> None:
         eligible,
         run_label=run_label,
         total_limit=total_limit,
+        discovery_ratio=discovery_ratio,
+        energy_tag=energy_tag,
     )
     filtered_final: List[TrackCandidate] = []
     seen_ids = set()
@@ -462,7 +622,7 @@ def main() -> None:
     if not track_ids:
         raise RuntimeError("No track IDs available to update the playlist.")
 
-    sp.playlist_replace_items(PLAYLIST_ID, track_ids)
+    _replace_playlist_items(track_ids)
     ensure_tracks_exist(filtered_final)
     mark_tracks_played(track_ids)
     record_playlist_run(

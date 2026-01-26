@@ -102,6 +102,15 @@ def migrate() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS artist_bans (
+                artist TEXT PRIMARY KEY,
+                reason TEXT,
+                banned_at DATE
+            )
+            """
+        )
         conn.commit()
     print("Migration complete.")
 

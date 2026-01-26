@@ -129,6 +129,13 @@ See `docs/DailyDJ.md` for a complete overview, component map, data layout, flow,
 - Stored there: `track_history.db`, `config/`, `data/gpt_history.jsonl`, `state/feedback.jsonl`, and Spotify token cache. If `DAILYDJ_HOME` is unset and the home does not exist, legacy repo-relative paths are used.
 - To migrate manually: create the home directory, move your DB/config/data/state files (and `.cache` token if desired) into it, then set `DAILYDJ_HOME`.
 
+## Quickstart (new users)
+1) Create venv and install deps (example): `python3 -m venv .venv && ./scripts/run_in_venv.sh -m pip install -r requirements.txt`
+2) (Optional) `export DAILYDJ_HOME=~/.dailydj`
+3) Bootstrap home with example configs (non-destructive): `./scripts/run_in_venv.sh spotify_automation/init_home.py`
+4) Edit configs under `$DAILYDJ_HOME/config/`
+5) Run refresh: `./scripts/run_in_venv.sh spotify_automation/daily_dj_refresh.py`
+
 ## Tests
 
 Unit tests for the GPT helper live under `tests/`. Run them with:

@@ -102,3 +102,10 @@
 - URI validation warnings: GPT picked URIs not in shortlist; they are dropped; ensure pool size is sufficient.
 - Spotify auth errors: check `.env` creds and scopes; renew token if expired.
 - Logs: GPT runs `data/gpt_history.jsonl`; feedback `state/feedback.jsonl`; playlist runs in `track_history.db` tables `playlist_runs` and `playlist_run_tracks`.
+
+## Quickstart for new users
+1) Create venv and install deps (example): `python3 -m venv .venv && ./scripts/run_in_venv.sh -m pip install -r requirements.txt`
+2) (Optional) Set home: `export DAILYDJ_HOME=~/.dailydj`
+3) Bootstrap home with example configs (safe, non-destructive): `./scripts/run_in_venv.sh spotify_automation/init_home.py`
+4) Edit your configs under `$DAILYDJ_HOME/config/` (or legacy paths if unset).
+5) Run refresh: `./scripts/run_in_venv.sh spotify_automation/daily_dj_refresh.py`

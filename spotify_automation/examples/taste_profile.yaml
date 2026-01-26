@@ -1,0 +1,54 @@
+version: 1
+
+hard_bans:
+  artists:
+    - placeholder artist
+  tracks: []
+
+avoid:
+  artists:
+    - example avoid artist
+  tracks: []
+
+boost:
+  artists:
+    - example boost artist
+  tracks: []
+
+like:
+  artists: []
+  tracks: []
+
+constraints:
+  max_tracks_per_artist: 1
+  cooldown_days_same_track: 30
+  cooldown_days_same_artist: 10
+  dedupe_title_variants: false
+
+discovery:
+  ratio_default: 0.2
+  discourage_artists: []
+
+scoring:
+  boost_weight: 1.0
+  like_weight: 0.5
+  avoid_weight: -0.5
+  hard_ban_weight: -9999.0
+  recent_play_penalty:
+    within_days: 14
+    penalty: -1.0
+  long_time_no_play_bonus:
+    after_days: 120
+    bonus: 0.0
+
+vibe_tags:
+  - upbeat
+  - indie rock
+
+modes:
+  friday:
+    discovery_ratio: 0.3
+    vibe_tags_add:
+      - high energy
+  monday:
+    discovery_ratio: 0.15

@@ -1,0 +1,13 @@
+{
+  "playlist_id": "your-playlist-id",
+  "playlist_name": "My Daily DJ",
+  "timezone_hint": "local time",
+  "tracks_per_day": 30,
+  "target_duration_minutes": 360,
+  "recent_days": 30,
+  "no_repeat_days": 14,
+  "discovery_ratio": 0.2,
+  "enable_gpt": true,
+  "max_history_items": 10,
+  "max_pool_snapshot": 12
+}

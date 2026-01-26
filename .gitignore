@@ -1,5 +1,12 @@
 .env
 spotify_automation/.venv/
 spotify_automation/.cache/
+track_history.db
+spotify_automation/track_history.db
+spotify_automation/state/
+spotify_automation/data/gpt_history.jsonl
+spotify_automation/data/*.jsonl
+*.db
+*.sqlite
 __pycache__/
 *.pyc

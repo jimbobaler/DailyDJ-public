@@ -23,7 +23,7 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Protocol, Sequence, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Protocol, Sequence, Tuple
 
 try:
     # ``openai`` is optional so the module can still be imported for testing.
@@ -42,6 +42,7 @@ class TrackCandidate:
     track_id: str
     title: str
     artist: str
+    duration_ms: Optional[int] = None
     album: Optional[str] = None
     energy_tag: Optional[str] = None
     metadata: Dict[str, str] = field(default_factory=dict)
@@ -321,6 +322,7 @@ def merge_gpt_recommendations(
     total_limit: int,
     discovery_ratio: float,
     rule_preferences: Optional[RulePreferences] = None,
+    search_func: Optional[Callable[[GPTRecommendation], Optional[TrackCandidate]]] = None,
 ) -> Tuple[List[TrackCandidate], List[str]]:
     """
     Merge GPT discoveries into the base track list while keeping ratios sane.
@@ -334,7 +336,7 @@ def merge_gpt_recommendations(
     pool_index = _build_track_index(track_pool)
 
     matched_discoveries, warnings = _match_recommendations(
-        gpt_recommendations, pool_index
+        gpt_recommendations, pool_index, search_func
     )
     matched_discoveries = matched_discoveries[:discovery_target]
 
@@ -390,6 +392,7 @@ def _build_track_index(
 def _match_recommendations(
     recommendations: Sequence[GPTRecommendation],
     index: Dict[str, TrackCandidate],
+    search_func: Optional[Callable[[GPTRecommendation], Optional[TrackCandidate]]] = None,
 ) -> Tuple[List[TrackCandidate], List[str]]:
     matched: List[TrackCandidate] = []
     warnings: List[str] = []
@@ -400,10 +403,18 @@ def _match_recommendations(
         if track is None:
             track = index.get(_normalize_key(rec.artist, rec.title))
         if track is None:
-            warnings.append(
-                f"GPT recommended '{rec.artist} – {rec.title}', but it was not in the Spotify pool."
-            )
-            continue
+            if search_func:
+                try:
+                    track = search_func(rec)
+                except Exception as exc:  # pragma: no cover - depends on external search
+                    warnings.append(
+                        f"Search failed for '{rec.artist} – {rec.title}': {exc}"
+                    )
+            if track is None:
+                warnings.append(
+                    f"GPT recommended '{rec.artist} – {rec.title}', but it was not in the Spotify pool."
+                )
+                continue
         enriched = replace(
             track,
             metadata={
@@ -469,6 +480,7 @@ def run_gpt_recommender(
     completion_client: Optional[CompletionClient] = None,
     max_history_items: int = 10,
     max_pool_snapshot: int = 12,
+    search_func: Optional[Callable[[GPTRecommendation], Optional[TrackCandidate]]] = None,
 ) -> RecommendationRunResult:
     """
     High-level helper that handles prompt/response/merge flow.
@@ -499,6 +511,7 @@ def run_gpt_recommender(
         total_limit=total_limit,
         discovery_ratio=discovery_ratio,
         rule_preferences=context.rule_preferences,
+        search_func=search_func,
     )
     return RecommendationRunResult(final_tracks, warnings, recommendations)
 

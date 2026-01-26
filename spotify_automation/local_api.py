@@ -4,8 +4,9 @@ import sqlite3
 from datetime import date
 import subprocess
 import json
+from pathlib import Path
 
-DB_PATH = "track_history.db"
+DB_PATH = Path(__file__).resolve().parent.parent / "track_history.db"
 PLAYLIST_ID = "1rDydhUJnGuHZ2x472nQuW"
 
 app = FastAPI(title="Local Spotify Automation API")

@@ -28,8 +28,12 @@ from spotify_automation.gpt_recommender import (
 context = RecommendationContext(
     user_profile={"focus": "upbeat coding"},
     rules={"banned_artists": ["the killers"]},
-    listening_history=[TrackCandidate("id1", "Song", "Artist")],
-    track_pool=[TrackCandidate("id2", "New Song", "Fresh Artist")],
+    listening_history=[
+        TrackCandidate(track_id="id1", title="Song", artist="Artist")
+    ],
+    track_pool=[
+        TrackCandidate(track_id="id2", title="New Song", artist="Fresh Artist")
+    ],
 )
 
 builder = GPTRequestBuilder(context, playlist_name="My Daily DJ")
@@ -53,7 +57,8 @@ final_tracks, warnings = merge_gpt_recommendations(
 The refresh script reads user information from JSON files under
 `spotify_automation/config/`:
 
-- `settings.json` – playlist id/name, discovery ratio, playlist limits, GPT flags.
+- `settings.json` – playlist id/name, discovery ratio, playlist limits, GPT flags,
+  `target_duration_minutes` (e.g., 360 for ~6 hours), and `no_repeat_days` (e.g., 14).
 - `user_profile.json` – short profile lines passed to GPT.
 - `rules.json` – banned / reduced artists plus any future rule lists.
 

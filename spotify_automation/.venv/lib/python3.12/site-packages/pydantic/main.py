@@ -449,7 +449,7 @@ class BaseModel(metaclass=_model_construction.ModelMetaclass):
             exclude_defaults: Whether to exclude fields that are set to their default value.
             exclude_none: Whether to exclude fields that have a value of `None`.
             exclude_computed_fields: Whether to exclude computed fields.
-                While this can be useful for round-tripping, it is usually recommended tu use the dedicated
+                While this can be useful for round-tripping, it is usually recommended to use the dedicated
                 `round_trip` parameter instead.
             round_trip: If True, dumped values should be valid as input for non-idempotent types such as Json[T].
             warnings: How to handle serialization errors. False/"none" ignores them, True/"warn" logs errors,
@@ -1732,6 +1732,11 @@ def create_model(  # noqa: C901
 
     Dynamically creates and returns a new Pydantic model, in other words, `create_model` dynamically creates a
     subclass of [`BaseModel`][pydantic.BaseModel].
+
+    !!! warning
+        This function may execute arbitrary code contained in field annotations, if string references need to be evaluated.
+
+        See [Security implications of introspecting annotations](https://docs.python.org/3/library/annotationlib.html#annotationlib-security) for more information.
 
     Args:
         model_name: The name of the newly created model.

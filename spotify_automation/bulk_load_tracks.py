@@ -30,7 +30,7 @@ from typing import Dict, Iterable, List, Optional
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
 
-DB_PATH = Path(__file__).resolve().with_name("track_history.db")
+DB_PATH = Path(__file__).resolve().parent.parent / "track_history.db"
 DEFAULT_DATA = Path(__file__).resolve().parent / "data" / "gpt_bulk_tracks.json"
 SCOPE = "playlist-modify-private playlist-read-private"
 
@@ -113,6 +113,7 @@ def fetch_metadata(sp: spotipy.Spotify, track_ids: Iterable[str]) -> Dict[str, D
             metadata[track["id"]] = {
                 "artist": artists,
                 "title": track["name"],
+                "duration_ms": track.get("duration_ms"),
             }
     return metadata
 
@@ -123,11 +124,16 @@ def insert_tracks(
     default_source: str,
     default_energy_tag: Optional[str],
     dry_run: bool,
-) -> None:
+    ) -> None:
     if dry_run:
         print("Dry run: skipping database insert.")
         for row in rows:
-            print(f"Would insert {row['artist']} – {row['title']} ({row['track_id']})")
+            duration = row.get("duration_ms") or 0
+            minutes = duration / 60000 if duration else 0
+            print(
+                f"Would insert {row['artist']} – {row['title']} ({row['track_id']}) "
+                f"[{minutes:.1f} min]"
+            )
         return
 
     with sqlite3.connect(DB_PATH) as conn:
@@ -137,8 +143,8 @@ def insert_tracks(
             cursor.execute(
                 """
                 INSERT OR REPLACE INTO tracks
-                (track_id, artist, title, last_played, source, energy_tag)
-                VALUES (?, ?, ?, NULL, ?, ?)
+                (track_id, artist, title, last_played, source, energy_tag, duration_ms)
+                VALUES (?, ?, ?, NULL, ?, ?, ?)
                 """,
                 (
                     row["track_id"],
@@ -146,6 +152,7 @@ def insert_tracks(
                     row["title"],
                     row.get("source") or default_source,
                     energy,
+                    row.get("duration_ms"),
                 ),
             )
         conn.commit()
@@ -190,6 +197,7 @@ def main() -> None:
                 "title": info["title"],
                 "energy_tag": entry.get("energy_tag"),
                 "source": entry.get("source"),
+                "duration_ms": info.get("duration_ms"),
             }
         )
 

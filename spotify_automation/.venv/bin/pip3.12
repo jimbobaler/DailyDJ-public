@@ -1,4 +1,4 @@
-#!/home/james/spotify_automation/.venv/bin/python3
+#!/home/james/DailyDJ/DailyDJ/spotify_automation/.venv/bin/python
 # -*- coding: utf-8 -*-
 import re
 import sys

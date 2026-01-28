@@ -4,12 +4,12 @@
 - Builds and refreshes a Spotify playlist (My Daily DJ) daily.
 - Uses a local SQLite catalog (`track_history.db`) to assemble a candidate pool.
 - Applies taste rules (hard bans, avoid/boost/like, cooldowns, per-artist caps, dedupe).
-- Can blend GPT picks from the candidate pool (URI-only, strict JSON). If the candidate pool is too small, GPT may add Spotify URIs/URLs outside the pool and they are resolved via Spotify. Invalid GPT output falls back to deterministic ranking.
+- Can blend GPT picks from the candidate pool (strict JSON). If the candidate pool is too small, GPT may add Spotify URIs/URLs outside the pool and they are resolved via Spotify. Invalid GPT output falls back to deterministic ranking.
 - Records runs and feedback to drive fatigue (penalize recent repeats, reward long-gapped plays).
 
 ## Components (files)
 - `spotify_automation/daily_dj_refresh.py`: Main orchestrator; fetches pool, filters, scores, runs GPT with a URI shortlist, merges/fills, updates Spotify, records run, bans removals.
-- `spotify_automation/run_gpt_recommender.py`: Standalone runner for GPT/deterministic selection without touching the playlist; supports `--taste-profile` and `--feedback-store`.
+- `spotify_automation/run_gpt_recommender.py`: Standalone runner for GPT/deterministic selection without touching the playlist; supports `--taste-profile`, `--feedback-store`, and applies per-mode overrides for the chosen energy tag.
 - `spotify_automation/gpt_recommender.py`: Prompt building, URI validation (pool-first), hard-ban checks, scoring, constraints, deterministic fallback.
 - `spotify_automation/taste_profile.py`: Loads/normalizes taste profile; scoring (boost/like/avoid), constraints (cooldowns, per-artist cap, dedupe), hard-ban checks.
 - `spotify_automation/feedback_store.py`: JSONL feedback store loader/writer (type `generated` events).
@@ -41,7 +41,7 @@
 3) Filter candidates: hard bans (including DB artist_bans), no-repeat window, cooldowns, per-artist cap, optional title dedupe, and avoid/banned artists checks.
 4) Score candidates (boost/like/avoid weights, scene anchors, discourage list, fatigue penalties/bonuses). Shortlist top 300 by score.
 5) GPT (if discovery_ratio > 0): send shortlist URIs, taste profile summary, and constraints. GPT returns JSON `{"picks": ["spotify:track:..."], "notes": "optional"}`. If the shortlist is too small, GPT may include Spotify URIs/URLs outside the pool which are resolved via Spotify; otherwise out-of-pool picks are dropped. If GPT fails or returns none, deterministic ranking is used.
-6) Apply constraints to GPT picks, merge with deterministic base, fill to target size/duration, enforce bans/constraints again. (External overflow skips constraints for GPT picks.)
+6) Apply constraints to GPT picks, merge with deterministic base, fill to target size/duration, enforce bans/constraints again. If the pool is too small, GPT is allowed to fill the remainder with external URIs/URLs and those picks bypass constraints to avoid empty playlists.
 7) Update playlist (replace first 100 URIs, then add remaining in chunks), mark `last_played`, record playlist_run, append feedback `generated` event.
 8) Auto-ban removals: tracks manually removed since the last run are banned; same-day reruns skip auto-bans. If an artist accumulates 3 such track bans, the artist is auto-banned.
 
@@ -52,7 +52,7 @@
 
 ## Modes and energy tags
 - Day-of-week -> energy tag map is in `daily_dj_refresh.py` (ENERGY_LABELS). The `--energy-tag` flag on `run_gpt_recommender.py` filters the pool by tag but does not change weekday selection.
-- Per-mode (e.g., `modes.friday`) overrides discovery ratio and can add boosts/avoids/vibe tags; merged with global lists.
+- Per-mode (e.g., `modes.friday`) overrides discovery ratio and can add boosts/avoids/vibe tags and constraints; merged with global lists.
 - If the pool for the day’s tag is empty, the refresh falls back to the full catalog.
 
 ## Candidate pool and shortlist

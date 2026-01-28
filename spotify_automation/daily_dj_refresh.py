@@ -24,7 +24,11 @@ from gpt_recommender import (
     log_recommendations,
     run_gpt_recommender,
 )
-from spotify_automation.taste_profile import load_taste_profile, resolve_discovery_ratio
+from spotify_automation.taste_profile import (
+    apply_mode_overrides,
+    load_taste_profile,
+    resolve_discovery_ratio,
+)
 from spotify_automation.feedback_store import load_state, record_boost_artist_event, record_like_event
 from spotify_automation import paths
 
@@ -62,7 +66,7 @@ def _load_json(path: Path, fallback: Dict) -> Dict:
 
 
 DEFAULT_SETTINGS: Dict[str, object] = {
-    "playlist_id": "1rDydhUJnGuHZ2x472nQuW",
+    "playlist_id": "your-playlist-id",
     "playlist_name": "My Daily DJ",
     "timezone_hint": "local time",
     "tracks_per_day": 60,
@@ -528,7 +532,7 @@ def _maybe_run_gpt(
             max_pool_snapshot=MAX_POOL_SNAPSHOT,
             search_func=_search_spotify_for_rec,
             resolve_uri_func=lambda uri: _resolve_spotify_uri(uri, energy_tag=energy_tag),
-            taste_profile=TASTE_PROFILE,
+            taste_profile=active_profile,
             feedback_state=FEEDBACK_STATE,
             feedback_path=DEFAULT_FEEDBACK_STORE,
             energy_tag=energy_tag,
@@ -585,6 +589,7 @@ def main() -> None:
     discovery_ratio = resolve_discovery_ratio(
         TASTE_PROFILE, fallback=DISCOVERY_RATIO, energy_tag=energy_tag
     )
+    active_profile = apply_mode_overrides(TASTE_PROFILE, energy_tag)
 
     like_threshold = _get_like_threshold(TASTE_PROFILE)
     # Refresh feedback state (may contain learned boosts)

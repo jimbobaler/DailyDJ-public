@@ -117,6 +117,48 @@ def resolve_discovery_ratio(
         return float(fallback)
 
 
+def apply_mode_overrides(profile: dict, energy_tag: Optional[str]) -> dict:
+    if not energy_tag:
+        return profile
+    mode = profile.get("modes", {}).get(energy_tag, {})
+    if not isinstance(mode, dict) or not mode:
+        return profile
+
+    merged = json.loads(json.dumps(profile))
+
+    def _extend_unique(target: list, values: list) -> list:
+        seen = set(target)
+        for value in values:
+            if value not in seen:
+                target.append(value)
+                seen.add(value)
+        return target
+
+    for section in ("hard_bans", "avoid", "boost", "like"):
+        overrides = mode.get(section, {})
+        if not isinstance(overrides, dict):
+            continue
+        base = merged.get(section, {})
+        for key in ("artists", "tracks"):
+            values = overrides.get(key)
+            if isinstance(values, list) and values:
+                base.setdefault(key, [])
+                base[key] = _extend_unique(list(base[key]), values)
+        merged[section] = base
+
+    constraints = mode.get("constraints")
+    if isinstance(constraints, dict):
+        merged.setdefault("constraints", {})
+        merged["constraints"].update(constraints)
+
+    vibe_add = mode.get("vibe_tags_add")
+    if isinstance(vibe_add, list) and vibe_add:
+        merged.setdefault("vibe_tags", [])
+        merged["vibe_tags"] = _extend_unique(list(merged["vibe_tags"]), vibe_add)
+
+    return merged
+
+
 def is_hard_banned(artist: str, title: str, profile: dict) -> bool:
     norm_artist = normalize_text(artist)
     norm_title = normalize_text(title)

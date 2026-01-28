@@ -31,7 +31,11 @@ from gpt_recommender import (
     run_gpt_recommender,
 )
 from spotify_automation.feedback_store import load_state
-from spotify_automation.taste_profile import load_taste_profile
+from spotify_automation.taste_profile import (
+    apply_mode_overrides,
+    load_taste_profile,
+    resolve_discovery_ratio,
+)
 from spotify_automation import paths
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -299,6 +303,10 @@ def main() -> None:
     cache_path.mkdir(parents=True, exist_ok=True)
     sp_client = spotipy.Spotify(auth_manager=SpotifyOAuth(scope=SCOPE, cache_path=str(cache_path / ".cache")))
     taste_profile = load_taste_profile(args.taste_profile)
+    taste_profile = apply_mode_overrides(taste_profile, args.energy_tag)
+    discovery_ratio = resolve_discovery_ratio(
+        taste_profile, fallback=args.discovery_ratio, energy_tag=args.energy_tag
+    )
     feedback_state = load_state(
         args.feedback_store, artist_like_threshold=_get_like_threshold(taste_profile)
     )
@@ -317,7 +325,7 @@ def main() -> None:
         playlist_name=settings.get("playlist_name", "My Daily DJ"),
         timezone_hint=settings.get("timezone_hint", "local time"),
         total_limit=args.limit,
-        discovery_ratio=args.discovery_ratio,
+        discovery_ratio=discovery_ratio,
         max_history_items=args.history_limit,
         max_pool_snapshot=args.limit,
         search_func=_search_spotify_for_rec(sp_client),

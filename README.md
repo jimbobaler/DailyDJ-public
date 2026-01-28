@@ -62,7 +62,8 @@ The refresh script reads user information from JSON files under
 - `user_profile.json` – short profile lines passed to GPT.
 - `rules.json` – banned / reduced artists plus any future rule lists.
 - `taste_profile.yaml` – hard_bans/avoid/boost/like lists, constraints (per-artist cap, cooldowns,
-  optional dedupe), vibe tags, and per-mode overrides (e.g., friday discovery ratio).
+  optional dedupe), vibe tags, and per-mode overrides (e.g., friday discovery ratio, boosts/avoids,
+  vibe tags, constraints).
 
 Tweak those files before running `python3 spotify_automation/daily_dj_refresh.py`.
 If you store secrets such as `OPENAI_API_KEY` in a repo-level `.env`, the script
@@ -112,10 +113,12 @@ for quick tagging.
 
 - Edit `spotify_automation/config/taste_profile.yaml` to set `hard_bans`, `avoid`, `boost`,
   constraints (`max_tracks_per_artist`, `cooldown_days_same_track`, `cooldown_days_same_artist`,
-  optional dedupe), vibe tags, and per-mode overrides like `modes.friday.discovery_ratio`.
+  optional dedupe), vibe tags, and per-mode overrides like `modes.friday.discovery_ratio`, plus
+  per-mode boosts/avoids/vibe tags/constraints.
 - Hard bans are enforced in code; GPT cannot select them. GPT prefers the Spotify candidate pool
   and must return strict JSON with track URIs. When the candidate pool is too small, GPT may
-  return Spotify track URIs/URLs outside the pool and they will be resolved via Spotify.
+  return Spotify track URIs/URLs outside the pool and they will be resolved via Spotify to fill
+  the day (external overflow skips constraints for GPT picks).
 - Feedback events are written to `spotify_automation/state/feedback.jsonl` (type `generated`),
   and influence scoring via fatigue on recently seen artists/tracks. Playlist runs are logged in
   `track_history.db` tables `playlist_runs` and `playlist_run_tracks`.
@@ -129,6 +132,12 @@ See `docs/DailyDJ.md` for a complete overview, component map, data layout, flow,
 - Set `DAILYDJ_HOME` to choose where runtime state lives (default: `~/.dailydj`).
 - Stored there: `track_history.db`, `config/`, `data/gpt_history.jsonl`, `state/feedback.jsonl`, and Spotify token cache. If `DAILYDJ_HOME` is unset and the home does not exist, legacy repo-relative paths are used.
 - To migrate manually: create the home directory, move your DB/config/data/state files (and `.cache` token if desired) into it, then set `DAILYDJ_HOME`.
+
+## Public release checklist
+- Remove `.env` and any cached tokens or DB files from the repo.
+- Ensure any playlist IDs or user-specific values use placeholders.
+- Keep real configs/state under `~/.dailydj` (not in the repo).
+- Verify docs reflect current behavior (discovery source, GPT overflow, mode overrides).
 
 ## Quickstart (new users)
 Install (choose one):

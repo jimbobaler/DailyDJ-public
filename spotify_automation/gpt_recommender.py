@@ -35,6 +35,7 @@ from spotify_automation.taste_profile import (
     apply_constraints,
     is_hard_banned,
     normalize_text,
+    resolve_discovery_ratio,
     score_track,
 )
 
@@ -452,6 +453,22 @@ def _normalize_key(artist: str, title: str) -> str:
     return f"{normalize(artist)}::{normalize(title)}"
 
 
+def _normalize_spotify_track_uri(value: str) -> Optional[str]:
+    raw = value.strip()
+    if raw.startswith("spotify:track:"):
+        track_id = raw.split("spotify:track:", 1)[-1].strip()
+        if track_id:
+            return f"spotify:track:{track_id}"
+    if "open.spotify.com/track/" in raw:
+        tail = raw.split("/track/", 1)[-1]
+        track_id = tail.split("?", 1)[0].split("/", 1)[0].strip()
+        if track_id:
+            return f"spotify:track:{track_id}"
+    if re.fullmatch(r"[0-9A-Za-z]{22}", raw):
+        return f"spotify:track:{raw}"
+    return None
+
+
 def log_recommendations(
     tracks: Sequence[TrackCandidate],
     destination: Path,
@@ -494,6 +511,7 @@ def run_gpt_recommender(
     feedback_path: Optional[Path] = None,
     energy_tag: Optional[str] = None,
     candidate_limit: int = 300,
+    resolve_uri_func: Optional[Callable[[str], Optional[TrackCandidate]]] = None,
 ) -> RecommendationRunResult:
     """
     High-level helper that handles prompt/response/merge flow.
@@ -512,6 +530,12 @@ def run_gpt_recommender(
             continue
         pool_with_uri.append(replace(track, uri=uri))
 
+    # taste_profile is the source of truth, with a single fallback
+    if profile:
+        discovery_ratio = resolve_discovery_ratio(
+            profile, fallback=discovery_ratio, energy_tag=energy_tag
+        )
+
     # deterministic scoring
     scored = []
     for track in pool_with_uri:
@@ -529,11 +553,24 @@ def run_gpt_recommender(
     warnings: List[str] = []
     gpt_picks: List[TrackCandidate] = []
 
-    if discovery_target > 0 and constrained_pool:
+    allow_external = discovery_target > 0 and len(constrained_pool) < discovery_target
+    external_target = discovery_target
+    if allow_external:
+        needed = max(0, total_limit - len(base_tracks))
+        external_target = max(discovery_target, needed)
+
+    if discovery_target > 0 and (constrained_pool or allow_external):
         candidate_lines = "\n".join(
             f"- {t.uri} | {t.artist} – {t.title}" for t in constrained_pool
-        )
+        ) or "- none"
         constraints = profile.get("constraints", {})
+        selection_rule = "You MUST select only from the candidate URIs below."
+        if allow_external:
+            selection_rule = (
+                "Prefer the candidate URIs below; if the list is too small, you may add "
+                "extra picks outside the list using Spotify track URIs or URLs. "
+                "If you cannot fill the request from candidates, use external Spotify URIs/URLs."
+            )
         prompt = (
             f"You are selecting discovery tracks for playlist '{playlist_name}'.\n"
             f"Timezone: {timezone_hint}. Energy tag: {energy_tag or ''}.\n"
@@ -543,8 +580,9 @@ def run_gpt_recommender(
             f"cooldown_days_same_track={constraints.get('cooldown_days_same_track', 'n/a')}, "
             f"cooldown_days_same_artist={constraints.get('cooldown_days_same_artist', 'n/a')}.\n"
             f"Vibe tags: {', '.join(profile.get('vibe_tags', []))}.\n"
-            f"You MUST select only from the candidate URIs below. Output strict JSON: "
-            f'{{\"picks\":[\"spotify:track:...\"], \"notes\":\"optional\"}} with at most {discovery_target} picks.\n'
+            f"{selection_rule} "
+            f"Output strict JSON: "
+            f'{{\"picks\":[\"spotify:track:...\"], \"notes\":\"optional\"}} with at most {external_target} picks.\n'
             f"If you cannot satisfy, return fewer picks.\n\n"
             f"Candidates:\n{candidate_lines}\n"
         )
@@ -555,21 +593,70 @@ def run_gpt_recommender(
             picks = payload.get("picks", [])
             if not isinstance(picks, list):
                 raise ValueError("picks must be a list")
-            allowed = {t.uri: t for t in constrained_pool}
-            for uri in picks:
+            allowed = {t.uri: t for t in constrained_pool if t.uri}
+            allowed_norm = {}
+            for track in constrained_pool:
+                if track.uri:
+                    norm_uri = _normalize_spotify_track_uri(track.uri)
+                    if norm_uri:
+                        allowed_norm[norm_uri] = track
+            def add_pick(uri: str) -> None:
+                nonlocal gpt_picks
                 if not isinstance(uri, str):
                     warnings.append("Non-string URI skipped from GPT picks.")
-                    continue
-                if uri not in allowed:
-                    warnings.append(f"GPT pick not in candidate list: {uri}")
-                    continue
-                gpt_picks.append(allowed[uri])
+                    return
+                normalized = _normalize_spotify_track_uri(uri) or uri
+                if normalized in allowed_norm:
+                    gpt_picks.append(allowed_norm[normalized])
+                    return
+                if uri in allowed:
+                    gpt_picks.append(allowed[uri])
+                    return
+                if allow_external:
+                    resolved = None
+                    if normalized and resolve_uri_func:
+                        try:
+                            resolved = resolve_uri_func(normalized)
+                        except Exception as exc:  # pragma: no cover - external lookup
+                            warnings.append(f"URI resolve failed for '{uri}': {exc}")
+                    if resolved and not is_hard_banned(
+                        resolved.artist, resolved.title, profile
+                    ):
+                        gpt_picks.append(resolved)
+                        return
+                warnings.append(f"GPT pick not in candidate list: {uri}")
+
+            for uri in picks:
+                add_pick(uri)
+
+            if allow_external and len(gpt_picks) < external_target:
+                remaining = external_target - len(gpt_picks)
+                followup_prompt = (
+                    f"You are selecting discovery tracks for playlist '{playlist_name}'.\n"
+                    f"Timezone: {timezone_hint}. Energy tag: {energy_tag or ''}.\n"
+                    f"Hard bans: {profile.get('hard_bans', {})}.\n"
+                    f"Avoid: {profile.get('avoid', {})}. Boost: {profile.get('boost', {})}.\n"
+                    f"Vibe tags: {', '.join(profile.get('vibe_tags', []))}.\n"
+                    f"Provide {remaining} additional Spotify track URIs or URLs not already listed. "
+                    f"Output strict JSON: "
+                    f'{{\"picks\":[\"spotify:track:...\"], \"notes\":\"optional\"}}.\n'
+                )
+                raw_response = client.complete(followup_prompt)
+                json_text = parser._extract_json(raw_response)
+                payload = json.loads(json_text)
+                picks = payload.get("picks", [])
+                if isinstance(picks, list):
+                    for uri in picks:
+                        add_pick(uri)
         except Exception as exc:  # pragma: no cover - network/SDK errors
             warnings.append(f"GPT recommender skipped: {exc}")
             gpt_picks = []
 
-    # apply constraints to gpt picks
-    gpt_picks = apply_constraints(gpt_picks, profile, state, now)[:discovery_target]
+    # apply constraints to gpt picks unless we explicitly allow external overflow
+    if allow_external:
+        gpt_picks = gpt_picks[:external_target]
+    else:
+        gpt_picks = apply_constraints(gpt_picks, profile, state, now)[:discovery_target]
 
     # fill with base tracks
     final_tracks: List[TrackCandidate] = []

@@ -4,13 +4,13 @@
 - Builds and refreshes a Spotify playlist (My Daily DJ) daily.
 - Uses a local SQLite catalog (`track_history.db`) to assemble a candidate pool.
 - Applies taste rules (hard bans, avoid/boost/like, cooldowns, per-artist caps, dedupe).
-- Can blend GPT picks constrained to the candidate pool (URI-only, strict JSON). Invalid GPT output falls back to deterministic ranking.
+- Can blend GPT picks from the candidate pool (URI-only, strict JSON). If the candidate pool is too small, GPT may add Spotify URIs/URLs outside the pool and they are resolved via Spotify. Invalid GPT output falls back to deterministic ranking.
 - Records runs and feedback to drive fatigue (penalize recent repeats, reward long-gapped plays).
 
 ## Components (files)
 - `spotify_automation/daily_dj_refresh.py`: Main orchestrator; fetches pool, filters, scores, runs GPT with a URI shortlist, merges/fills, updates Spotify, records run, bans removals.
 - `spotify_automation/run_gpt_recommender.py`: Standalone runner for GPT/deterministic selection without touching the playlist; supports `--taste-profile` and `--feedback-store`.
-- `spotify_automation/gpt_recommender.py`: Prompt building, URI-only GPT validation, hard-ban checks, scoring, constraints, deterministic fallback.
+- `spotify_automation/gpt_recommender.py`: Prompt building, URI validation (pool-first), hard-ban checks, scoring, constraints, deterministic fallback.
 - `spotify_automation/taste_profile.py`: Loads/normalizes taste profile; scoring (boost/like/avoid), constraints (cooldowns, per-artist cap, dedupe), hard-ban checks.
 - `spotify_automation/feedback_store.py`: JSONL feedback store loader/writer (type `generated` events).
 - `spotify_automation/migrate_db.py` / `init_db.py`: Create/upgrade SQLite schema (tracks, bans, artist_bans, playlist_runs, playlist_run_tracks).
@@ -36,14 +36,14 @@
 - Reset learned boosts/likes by deleting the relevant lines (or the whole file) in `state/feedback.jsonl`.
 
 ## End-to-end flow (daily_dj_refresh.py)
-1) Load settings, taste profile, feedback state, mode overrides (e.g., `modes.friday.discovery_ratio`).
+1) Load settings, taste profile, feedback state. Discovery ratio is sourced from taste profile (`discovery.ratio_default` or `modes.<day>.discovery_ratio`) with a single fallback to settings.
 2) Determine today’s energy tag (weekday -> tag). Candidate pool query: `tracks WHERE energy_tag = <tag> OR energy_tag IS NULL`; if empty after filtering, fall back to all tracks.
 3) Filter candidates: hard bans (including DB artist_bans), no-repeat window, cooldowns, per-artist cap, optional title dedupe, and avoid/banned artists checks.
 4) Score candidates (boost/like/avoid weights, scene anchors, discourage list, fatigue penalties/bonuses). Shortlist top 300 by score.
-5) GPT (if discovery_ratio > 0): send shortlist URIs, taste profile summary, and constraints. GPT must return JSON `{"picks": ["spotify:track:..."], "notes": "optional"}` using only provided URIs. Invalid or out-of-pool URIs are dropped; if GPT fails or returns none, deterministic ranking is used.
-6) Apply constraints to GPT picks, merge with deterministic base, fill to target size/duration, enforce bans/constraints again.
+5) GPT (if discovery_ratio > 0): send shortlist URIs, taste profile summary, and constraints. GPT returns JSON `{"picks": ["spotify:track:..."], "notes": "optional"}`. If the shortlist is too small, GPT may include Spotify URIs/URLs outside the pool which are resolved via Spotify; otherwise out-of-pool picks are dropped. If GPT fails or returns none, deterministic ranking is used.
+6) Apply constraints to GPT picks, merge with deterministic base, fill to target size/duration, enforce bans/constraints again. (External overflow skips constraints for GPT picks.)
 7) Update playlist (replace first 100 URIs, then add remaining in chunks), mark `last_played`, record playlist_run, append feedback `generated` event.
-8) Auto-ban removals: tracks manually removed since the last run are banned; if an artist accumulates 3 such track bans, the artist is auto-banned.
+8) Auto-ban removals: tracks manually removed since the last run are banned; same-day reruns skip auto-bans. If an artist accumulates 3 such track bans, the artist is auto-banned.
 
 ## Hard bans and normalization
 - Hard bans are enforced before GPT and after GPT merge (`is_hard_banned` in `taste_profile.py`; applied in `gpt_recommender.run_gpt_recommender` and `_apply_artist_rules` in `daily_dj_refresh.py`).
@@ -66,7 +66,7 @@
 - Fatigue/cooldowns: built from `feedback.jsonl` last-seen timestamps plus DB bans/cooldowns.
 
 ## Failure modes and fallbacks
-- GPT errors/invalid JSON/out-of-pool URIs: warnings logged; GPT picks dropped; deterministic ranking used to fill.
+- GPT errors/invalid JSON/out-of-pool URIs: warnings logged; GPT picks dropped; deterministic ranking used to fill. If the pool is too small, GPT may add external URIs/URLs and those are resolved via Spotify.
 - Spotify errors (e.g., >100 URIs): playlist updates are chunked; if Spotify fails, the run aborts at that step.
 - Empty pool after filtering: falls back to full catalog; if still empty, raises `RuntimeError`.
 - OpenAI quota/rate limits: run logs a warning and uses deterministic selection only.
@@ -104,8 +104,44 @@
 - Logs: GPT runs `data/gpt_history.jsonl`; feedback `state/feedback.jsonl`; playlist runs in `track_history.db` tables `playlist_runs` and `playlist_run_tracks`.
 
 ## Quickstart for new users
-1) Create venv and install deps (example): `python3 -m venv .venv && ./scripts/run_in_venv.sh -m pip install -r requirements.txt`
-2) (Optional) Set home: `export DAILYDJ_HOME=~/.dailydj`
-3) Bootstrap home with example configs (safe, non-destructive): `./scripts/run_in_venv.sh spotify_automation/init_home.py`
-4) Edit your configs under `$DAILYDJ_HOME/config/` (or legacy paths if unset).
-5) Run refresh: `./scripts/run_in_venv.sh spotify_automation/daily_dj_refresh.py`
+Install (choose one):
+- pipx: `pipx install .`
+- venv: `python3 -m venv .venv && ./.venv/bin/pip install .`
+
+1) (Optional) Set home: `export DAILYDJ_HOME=~/.dailydj`
+2) Bootstrap home with example configs (safe, non-destructive): `dailydj init`
+3) Edit your configs under `$DAILYDJ_HOME/config/`
+4) Run refresh: `dailydj run`
+
+### Scheduler examples
+- systemd (user):
+  - `~/.config/systemd/user/dailydj.service`:
+    ```
+    [Unit]
+    Description=DailyDJ refresh
+
+    [Service]
+    Environment=DAILYDJ_HOME=%h/.dailydj
+    ExecStart=%h/.local/bin/dailydj run
+    ```
+  - `~/.config/systemd/user/dailydj.timer`:
+    ```
+    [Unit]
+    Description=Run DailyDJ daily
+
+    [Timer]
+    OnCalendar=*-*-* 03:00
+    Persistent=true
+
+    [Install]
+    WantedBy=timers.target
+    ```
+  - Enable: `systemctl --user daemon-reload && systemctl --user enable --now dailydj.timer`
+  - Logs: `journalctl --user -u dailydj.service -f`
+
+- cron (fallback):
+  - Create a wrapper script that sets `DAILYDJ_HOME` and calls the installed `dailydj run`.
+  - Example crontab line (3 AM daily):
+    ```
+    0 3 * * * DAILYDJ_HOME=/home/you/.dailydj /home/you/.local/bin/dailydj run >> /home/you/.dailydj/dailydj.log 2>&1
+    ```

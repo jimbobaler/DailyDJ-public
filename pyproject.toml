@@ -1,0 +1,27 @@
+[project]
+name = "dailydj"
+version = "0.1.0"
+description = "Daily Spotify playlist refresh with GPT assist and taste rules."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+authors = [{ name = "James Marley" }]
+dependencies = [
+  "spotipy",
+  "openai",
+  "PyYAML",
+]
+
+[project.scripts]
+dailydj = "dailydj.cli:main"
+
+[tool.setuptools]
+packages = { find = { where = ["."] } }
+include-package-data = true
+
+[tool.setuptools.package-data]
+"spotify_automation.examples" = ["*.json", "*.yaml"]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"

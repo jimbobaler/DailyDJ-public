@@ -2,6 +2,7 @@
 import json
 import os
 import random
+import re
 import sqlite3
 from datetime import date, timedelta
 from pathlib import Path
@@ -23,7 +24,7 @@ from gpt_recommender import (
     log_recommendations,
     run_gpt_recommender,
 )
-from spotify_automation.taste_profile import load_taste_profile
+from spotify_automation.taste_profile import load_taste_profile, resolve_discovery_ratio
 from spotify_automation.feedback_store import load_state, record_boost_artist_event, record_like_event
 from spotify_automation import paths
 
@@ -108,7 +109,6 @@ MAX_HISTORY_ITEMS = int(settings.get("max_history_items", 10))
 MAX_POOL_SNAPSHOT = int(settings.get("max_pool_snapshot", 12))
 TIMEZONE_HINT = settings.get("timezone_hint", "local time")
 TASTE_PROFILE = load_taste_profile(DEFAULT_TASTE_PROFILE)
-MODES = TASTE_PROFILE.get("modes", {})
 DYNAMIC_BANNED_ARTISTS: set[str] = set()
 
 
@@ -270,18 +270,19 @@ def fetch_playlist_track_ids() -> List[str]:
     return track_ids
 
 
-def load_last_run_track_ids() -> set[str]:
+def load_last_run_info() -> tuple[Optional[str], set[str]]:
     with sqlite3.connect(DB_PATH) as conn:
         run = conn.execute(
-            "SELECT id FROM playlist_runs ORDER BY run_at DESC LIMIT 1"
+            "SELECT id, run_at FROM playlist_runs ORDER BY run_at DESC, id DESC LIMIT 1"
         ).fetchone()
         if not run:
-            return set()
+            return None, set()
         run_id = run[0]
+        run_at = run[1]
         rows = conn.execute(
             "SELECT track_id FROM playlist_run_tracks WHERE run_id=?", (run_id,)
         ).fetchall()
-    return {r[0] for r in rows}
+    return run_at, {r[0] for r in rows}
 
 
 def record_playlist_run(run_label: str, energy_tag: str, tracks: Sequence[TrackCandidate]) -> None:
@@ -459,6 +460,33 @@ def _search_spotify_for_rec(rec: GPTRecommendation) -> Optional[TrackCandidate]:
     )
 
 
+def _resolve_spotify_uri(uri: str, *, energy_tag: Optional[str] = None) -> Optional[TrackCandidate]:
+    value = uri.strip()
+    track_id = None
+    if value.startswith("spotify:track:"):
+        track_id = value.split("spotify:track:", 1)[-1].strip()
+    elif "open.spotify.com/track/" in value:
+        tail = value.split("/track/", 1)[-1]
+        track_id = tail.split("?", 1)[0].split("/", 1)[0].strip()
+    elif re.fullmatch(r"[0-9A-Za-z]{22}", value):
+        track_id = value
+    if not track_id:
+        return None
+    track = sp.track(track_id)
+    artist_names = ", ".join(a["name"] for a in track.get("artists", []))
+    return TrackCandidate(
+        track_id=track["id"],
+        artist=artist_names,
+        title=track.get("name", ""),
+        duration_ms=track.get("duration_ms"),
+        energy_tag=energy_tag,
+        metadata={
+            "source": "gpt_discovery",
+            "uri": f"spotify:track:{track['id']}",
+        },
+    )
+
+
 def _maybe_run_gpt(
     base_tracks: Sequence[TrackCandidate],
     pool: Sequence[TrackCandidate],
@@ -499,6 +527,7 @@ def _maybe_run_gpt(
             max_history_items=MAX_HISTORY_ITEMS,
             max_pool_snapshot=MAX_POOL_SNAPSHOT,
             search_func=_search_spotify_for_rec,
+            resolve_uri_func=lambda uri: _resolve_spotify_uri(uri, energy_tag=energy_tag),
             taste_profile=TASTE_PROFILE,
             feedback_state=FEEDBACK_STATE,
             feedback_path=DEFAULT_FEEDBACK_STORE,
@@ -553,8 +582,9 @@ def main() -> None:
     run_label = f"{date.today().isoformat()}-{energy_tag}"
     print(f"\n🎧 Building playlist for {energy_tag.capitalize()}...")
 
-    mode_override = MODES.get(energy_tag, {})
-    discovery_ratio = float(mode_override.get("discovery_ratio", DISCOVERY_RATIO))
+    discovery_ratio = resolve_discovery_ratio(
+        TASTE_PROFILE, fallback=DISCOVERY_RATIO, energy_tag=energy_tag
+    )
 
     like_threshold = _get_like_threshold(TASTE_PROFILE)
     # Refresh feedback state (may contain learned boosts)
@@ -567,11 +597,17 @@ def main() -> None:
     )
 
     current_playlist = set(fetch_playlist_track_ids())
-    last_run_ids = load_last_run_track_ids()
+    last_run_at, last_run_ids = load_last_run_info()
     removed = last_run_ids - current_playlist
     if removed:
-        print(f"➖ Banning {len(removed)} track(s) manually removed since last run.")
-        record_bans(removed, reason="manually removed from playlist")
+        today = str(date.today())
+        if last_run_at and last_run_at >= today:
+            print(
+                f"➖ Skipping {len(removed)} auto-ban(s); last run was today ({last_run_at})."
+            )
+        else:
+            print(f"➖ Banning {len(removed)} track(s) manually removed since last run.")
+            record_bans(removed, reason="manually removed from playlist")
 
     banned_ids = get_banned_track_ids()
     recent = get_recent_track_ids(NO_REPEAT_DAYS)

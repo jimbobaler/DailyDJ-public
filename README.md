@@ -57,8 +57,8 @@ final_tracks, warnings = merge_gpt_recommendations(
 The refresh script reads user information from JSON files under
 `spotify_automation/config/`:
 
-- `settings.json` – playlist id/name, discovery ratio, playlist limits, GPT flags,
-  `target_duration_minutes`, and `no_repeat_days`.
+- `settings.json` – playlist id/name, playlist limits, GPT flags,
+  `target_duration_minutes`, `no_repeat_days`, and fallback discovery ratio.
 - `user_profile.json` – short profile lines passed to GPT.
 - `rules.json` – banned / reduced artists plus any future rule lists.
 - `taste_profile.yaml` – hard_bans/avoid/boost/like lists, constraints (per-artist cap, cooldowns,
@@ -113,8 +113,9 @@ for quick tagging.
 - Edit `spotify_automation/config/taste_profile.yaml` to set `hard_bans`, `avoid`, `boost`,
   constraints (`max_tracks_per_artist`, `cooldown_days_same_track`, `cooldown_days_same_artist`,
   optional dedupe), vibe tags, and per-mode overrides like `modes.friday.discovery_ratio`.
-- Hard bans are enforced in code; GPT cannot select them. GPT is also forced to pick only from
-  the provided Spotify candidate pool and must return strict JSON with track URIs.
+- Hard bans are enforced in code; GPT cannot select them. GPT prefers the Spotify candidate pool
+  and must return strict JSON with track URIs. When the candidate pool is too small, GPT may
+  return Spotify track URIs/URLs outside the pool and they will be resolved via Spotify.
 - Feedback events are written to `spotify_automation/state/feedback.jsonl` (type `generated`),
   and influence scoring via fatigue on recently seen artists/tracks. Playlist runs are logged in
   `track_history.db` tables `playlist_runs` and `playlist_run_tracks`.
@@ -130,11 +131,20 @@ See `docs/DailyDJ.md` for a complete overview, component map, data layout, flow,
 - To migrate manually: create the home directory, move your DB/config/data/state files (and `.cache` token if desired) into it, then set `DAILYDJ_HOME`.
 
 ## Quickstart (new users)
-1) Create venv and install deps (example): `python3 -m venv .venv && ./scripts/run_in_venv.sh -m pip install -r requirements.txt`
-2) (Optional) `export DAILYDJ_HOME=~/.dailydj`
-3) Bootstrap home with example configs (non-destructive): `./scripts/run_in_venv.sh spotify_automation/init_home.py`
-4) Edit configs under `$DAILYDJ_HOME/config/`
-5) Run refresh: `./scripts/run_in_venv.sh spotify_automation/daily_dj_refresh.py`
+Install (choose one):
+- pipx: `pipx install .`
+- venv: `python3 -m venv .venv && ./.venv/bin/pip install .`
+
+1) (Optional) `export DAILYDJ_HOME=~/.dailydj`
+2) Bootstrap home with example configs (non-destructive): `dailydj init`
+3) Edit configs under `$DAILYDJ_HOME/config/`
+4) Run refresh: `dailydj run`
+
+Scheduler examples:
+- systemd user timer: create `~/.config/systemd/user/dailydj.service` with `Environment=DAILYDJ_HOME=%h/.dailydj` and `ExecStart=%h/.local/bin/dailydj run`, and `~/.config/systemd/user/dailydj.timer` with `OnCalendar=*-*-* 03:00`; enable with `systemctl --user enable --now dailydj.timer`.
+- cron: `0 3 * * * DAILYDJ_HOME=/home/you/.dailydj /home/you/.local/bin/dailydj run >> /home/you/.dailydj/dailydj.log 2>&1`
+
+License: MIT (see LICENSE).
 
 ## Tests
 

@@ -98,7 +98,23 @@ def load_taste_profile(path: Path) -> dict:
         profile["avoid"]["tracks"] = list({*profile["avoid"]["tracks"], *avoid_tracks})
 
     return profile
-    return profile
+
+
+def resolve_discovery_ratio(
+    profile: dict,
+    *,
+    fallback: float,
+    energy_tag: Optional[str] = None,
+) -> float:
+    ratio = profile.get("discovery", {}).get("ratio_default", fallback)
+    if energy_tag:
+        mode_ratio = profile.get("modes", {}).get(energy_tag, {}).get("discovery_ratio")
+        if mode_ratio is not None:
+            ratio = mode_ratio
+    try:
+        return float(ratio)
+    except (TypeError, ValueError):
+        return float(fallback)
 
 
 def is_hard_banned(artist: str, title: str, profile: dict) -> bool:
